@@ -37,6 +37,10 @@ class PhoneSpeakSkillConfig(ModuleConfig):
     endpoint_url: str = "http://127.0.0.1:8900/assistive/speak"
     timeout_s: float = 2.0
     max_text_chars: int = 300
+    retry_attempts: int = 3
+    retry_backoff_s: float = 0.25
+    circuit_breaker_threshold: int = 5
+    circuit_breaker_recovery_s: float = 10.0
 
 
 class PhoneSpeakSkill(Module[PhoneSpeakSkillConfig]):
@@ -50,6 +54,9 @@ class PhoneSpeakSkill(Module[PhoneSpeakSkillConfig]):
     _delivered_count: int
     _failed_count: int
     _last_latency_ms: float | None
+    _consecutive_failures: int
+    _circuit_open_until_ts: float
+    _allowed_priorities: set[str] = {"normal", "warning", "critical"}
 
     @rpc
     def start(self) -> None:
@@ -57,6 +64,8 @@ class PhoneSpeakSkill(Module[PhoneSpeakSkillConfig]):
         self._delivered_count = 0
         self._failed_count = 0
         self._last_latency_ms = None
+        self._consecutive_failures = 0
+        self._circuit_open_until_ts = 0.0
 
     @rpc
     def stop(self) -> None:
@@ -69,6 +78,8 @@ class PhoneSpeakSkill(Module[PhoneSpeakSkillConfig]):
             "delivered_count": self._delivered_count,
             "failed_count": self._failed_count,
             "last_latency_ms": self._last_latency_ms,
+            "consecutive_failures": self._consecutive_failures,
+            "circuit_open_until_ts": self._circuit_open_until_ts,
         }
 
     @skill
@@ -83,34 +94,74 @@ class PhoneSpeakSkill(Module[PhoneSpeakSkillConfig]):
         if not safe_text:
             return "No text provided."
 
+        now = time.time()
+        if now < self._circuit_open_until_ts:
+            cooldown_s = max(0.0, self._circuit_open_until_ts - now)
+            self.delivery_event.publish(f"circuit_open:{cooldown_s:.1f}s")
+            return f"Delivery paused by circuit breaker for {cooldown_s:.1f}s"
+
+        safe_priority = priority.strip().lower()
+        if safe_priority not in self._allowed_priorities:
+            self._failed_count += 1
+            self.delivery_event.publish(f"validation_error:invalid_priority:{safe_priority}")
+            return (
+                "Invalid priority. Expected one of: normal, warning, critical."
+            )
+
+        if not self.config.endpoint_url.startswith(("http://", "https://")):
+            self._failed_count += 1
+            self.delivery_event.publish("validation_error:invalid_endpoint_url")
+            return "Invalid endpoint URL."
+
         if len(safe_text) > self.config.max_text_chars:
             safe_text = safe_text[: self.config.max_text_chars]
 
-        payload = {"text": safe_text, "priority": priority}
+        payload = {"text": safe_text, "priority": safe_priority}
+        attempts = max(1, int(self.config.retry_attempts))
+        backoff_s = max(0.0, float(self.config.retry_backoff_s))
+        last_exc: Exception | None = None
 
-        try:
-            response = requests.post(
-                self.config.endpoint_url,
-                json=payload,
-                timeout=self.config.timeout_s,
+        for attempt in range(1, attempts + 1):
+            try:
+                response = requests.post(
+                    self.config.endpoint_url,
+                    json=payload,
+                    timeout=self.config.timeout_s,
+                )
+                response.raise_for_status()
+
+                latency_ms = float(response.elapsed.total_seconds() * 1000.0)
+                self._last_latency_ms = latency_ms
+                self._delivered_count += 1
+                self._consecutive_failures = 0
+
+                self.delivery_latency_ms.publish(latency_ms)
+                self.delivery_event.publish(f"delivered:{safe_priority}:{latency_ms:.1f}ms")
+
+                return f"Delivered to phone in {latency_ms:.1f}ms"
+            except Exception as exc:
+                last_exc = exc
+                self.delivery_event.publish(
+                    f"delivery_retry:{attempt}/{attempts}:{type(exc).__name__}"
+                )
+                if attempt < attempts and backoff_s > 0.0:
+                    time.sleep(backoff_s * attempt)
+
+        self._failed_count += 1
+        self._consecutive_failures += 1
+        threshold = max(1, int(self.config.circuit_breaker_threshold))
+        if self._consecutive_failures >= threshold:
+            self._circuit_open_until_ts = time.time() + max(
+                0.0,
+                float(self.config.circuit_breaker_recovery_s),
             )
-            response.raise_for_status()
-
-            latency_ms = float(response.elapsed.total_seconds() * 1000.0)
-            self._last_latency_ms = latency_ms
-            self._delivered_count += 1
-
-            self.delivery_latency_ms.publish(latency_ms)
-            self.delivery_event.publish(f"delivered:{priority}:{latency_ms:.1f}ms")
-
-            return f"Delivered to phone in {latency_ms:.1f}ms"
-
-        except Exception as exc:
-            self._failed_count += 1
-            message = f"delivery_error:{type(exc).__name__}"
-            self.delivery_event.publish(message)
-            logger.warning(f"Phone speech delivery failed: {exc}")
-            return f"Failed to deliver instruction: {exc}"
+            self.delivery_event.publish(
+                f"circuit_opened:{self._consecutive_failures}:{self._circuit_open_until_ts:.3f}"
+            )
+        message = f"delivery_error:{type(last_exc).__name__ if last_exc is not None else 'UnknownError'}"
+        self.delivery_event.publish(message)
+        logger.warning(f"Phone speech delivery failed: {last_exc}")
+        return f"Failed to deliver instruction: {last_exc}"
 
 
 phone_speak_skill = PhoneSpeakSkill.blueprint

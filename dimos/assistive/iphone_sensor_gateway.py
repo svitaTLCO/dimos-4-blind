@@ -59,6 +59,7 @@ class IPhoneSensorGateway(Module[IPhoneSensorGatewayConfig]):
     color_image: Out[Image]
     imu: Out[Imu]
     human_input: Out[str]
+    gateway_event: Out[str]
 
     _web_server: RobotWebInterface | None = None
     _web_server_thread: Thread | None = None
@@ -131,6 +132,11 @@ class IPhoneSensorGateway(Module[IPhoneSensorGatewayConfig]):
                 logger.exception("iPhone sensor gateway websocket error")
 
     def _handle_payload(self, payload: dict[str, Any]) -> list[str]:
+        ok, reason = self._validate_payload(payload)
+        if not ok:
+            self._publish_event(f"payload_dropped:{reason}")
+            return []
+
         now = time.time()
         published: list[str] = []
 
@@ -156,6 +162,35 @@ class IPhoneSensorGateway(Module[IPhoneSensorGatewayConfig]):
             published.append("color_image")
 
         return published
+
+    def _validate_payload(self, payload: Any) -> tuple[bool, str]:
+        if not isinstance(payload, dict):
+            return False, "not_dict"
+
+        ts = payload.get("ts")
+        if ts is not None and not isinstance(ts, (float, int)):
+            return False, "invalid_ts"
+
+        has_text = isinstance(payload.get("text"), str) and bool(payload.get("text", "").strip())
+        has_transcript = isinstance(payload.get("voice_transcript"), str) and bool(
+            payload.get("voice_transcript", "").strip()
+        )
+        has_imu = isinstance(payload.get("imu"), dict)
+        has_image = isinstance(payload.get("image_b64"), str) and bool(payload.get("image_b64"))
+
+        if not (has_text or has_transcript or has_imu or has_image):
+            return False, "no_supported_fields"
+
+        return True, "ok"
+
+    def _publish_event(self, event: str) -> None:
+        stream = getattr(self, "gateway_event", None)
+        if stream is None:
+            return
+        try:
+            stream.publish(event)
+        except Exception:
+            logger.exception("Failed to publish gateway event")
 
     def _normalize_ts(self, ts: float | int | None, now: float) -> float | None:
         if ts is None:

@@ -66,6 +66,7 @@ dependencies = [
     # Logging
     "structlog>=25.5.0,<26",
     "colorlog==6.9.0",
+    "requests>=2.32.0",
     # Core Msgs
     "opencv-python",
     "open3d-unofficial-arm; platform_system == 'Linux' and platform_machine == 'aarch64'",
