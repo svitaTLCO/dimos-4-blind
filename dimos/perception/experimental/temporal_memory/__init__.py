@@ -17,6 +17,7 @@
 from .frame_window_accumulator import Frame, FrameWindowAccumulator
 from .temporal_memory import TemporalMemory, TemporalMemoryConfig, temporal_memory
 from .temporal_state import TemporalState
+from .web_scan_input import WebScanInput, web_scan_input
 from .window_analyzer import WindowAnalyzer
 
 __all__ = [
@@ -25,6 +26,8 @@ __all__ = [
     "TemporalMemory",
     "TemporalMemoryConfig",
     "TemporalState",
+    "WebScanInput",
     "WindowAnalyzer",
     "temporal_memory",
+    "web_scan_input",
 ]
