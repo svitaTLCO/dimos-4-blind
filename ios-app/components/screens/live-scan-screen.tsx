@@ -18,6 +18,7 @@ export function LiveScanScreen({ onBack, onFinish }: LiveScanScreenProps) {
   const [currentGuidance, setCurrentGuidance] = useState<GuidanceType>("look-corners")
   const [rooms, setRooms] = useState([{ id: "1", name: "Room 1", complete: false }])
   const [cameraError, setCameraError] = useState<string | null>(null)
+  const [uploadError, setUploadError] = useState<string | null>(null)
 
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
@@ -93,14 +94,23 @@ export function LiveScanScreen({ onBack, onFinish }: LiveScanScreenProps) {
       }
       inFlightRef.current = true
       const sendPayload = async (body: string) => {
-        await fetch("/api/scan/frame", { method: "POST", headers: { "Content-Type": "application/json" }, body })
-        const queued = queuedPayloadRef.current
-        queuedPayloadRef.current = null
-        if (queued) {
-          await sendPayload(queued)
-          return
+        try {
+          const resp = await fetch("/api/scan/frame", { method: "POST", headers: { "Content-Type": "application/json" }, body })
+          if (!resp.ok) {
+            setUploadError(`Upload failed (${resp.status})`)
+          } else {
+            setUploadError(null)
+          }
+          const queued = queuedPayloadRef.current
+          queuedPayloadRef.current = null
+          if (queued) {
+            await sendPayload(queued)
+          }
+        } catch (error) {
+          setUploadError(error instanceof Error ? error.message : "Upload failed")
+        } finally {
+          inFlightRef.current = false
         }
-        inFlightRef.current = false
       }
       void sendPayload(payload)
     }, 1000)
@@ -134,6 +144,7 @@ export function LiveScanScreen({ onBack, onFinish }: LiveScanScreenProps) {
         <div className="rounded-xl bg-background/20 p-4 backdrop-blur-md">
           <ProgressBand value={progress} label="Room Coverage" variant={progress > 80 ? "success" : "default"} />
           {cameraError ? <p className="mt-2 text-sm text-red-200">Camera error: {cameraError}</p> : null}
+          {uploadError ? <p className="mt-1 text-sm text-yellow-200">{uploadError}</p> : null}
         </div>
 
         <div className="flex justify-center">

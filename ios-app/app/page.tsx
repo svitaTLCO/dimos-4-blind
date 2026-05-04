@@ -94,7 +94,20 @@ export default function EchoSpaceApp() {
     if (useMockData && placesData[0]) {
       setSelectedPlace(placesData[0])
     } else {
-      setSelectedPlace({ ...placesData[0], id: "live-scan", name: "Latest Scan", description: summary, createdAt: new Date(), lastAccessedAt: new Date() })
+      if (!summary) {
+        setCurrentScreen("home")
+        return
+      }
+      setSelectedPlace({
+        id: "live-scan",
+        name: "Latest Scan",
+        description: summary,
+        rooms: [],
+        routes: [],
+        scanQuality: "fair",
+        createdAt: new Date(),
+        lastAccessedAt: new Date(),
+      })
     }
     setCurrentScreen("place-overview")
   }
