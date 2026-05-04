@@ -44,6 +44,9 @@ export default function EchoSpaceApp() {
   const [accessibilitySettings, setAccessibilitySettings] = useState<AccessibilitySettings>(
     defaultAccessibilitySettings
   )
+  const useMockData = process.env.NEXT_PUBLIC_USE_MOCK_DATA === "true"
+  const placesData = mockPlaces
+  const routesData = mockRoutes
 
   const handleTabChange = (tab: TabId) => {
     setActiveTab(tab)
@@ -87,15 +90,17 @@ export default function EchoSpaceApp() {
     setCurrentScreen("processing")
   }
 
-  const handleProcessingComplete = () => {
-    if (mockPlaces[0]) {
-      setSelectedPlace(mockPlaces[0])
-      setCurrentScreen("place-overview")
+  const handleProcessingComplete = (summary: string) => {
+    if (useMockData && placesData[0]) {
+      setSelectedPlace(placesData[0])
+    } else {
+      setSelectedPlace({ ...placesData[0], id: "live-scan", name: "Latest Scan", description: summary, createdAt: new Date(), lastAccessedAt: new Date() })
     }
+    setCurrentScreen("place-overview")
   }
 
   const handleOpenPlace = (placeId: string) => {
-    const place = mockPlaces.find((p) => p.id === placeId)
+    const place = placesData.find((p) => p.id === placeId)
     if (place) {
       setSelectedPlace(place)
       setCurrentScreen("place-overview")
@@ -127,8 +132,8 @@ export default function EchoSpaceApp() {
       case "home":
         return (
           <HomeScreen
-            places={mockPlaces}
-            recentRoutes={mockRoutes}
+            places={placesData}
+            recentRoutes={routesData}
             onNewScan={handleNewScan}
             onOpenPlace={handleOpenPlace}
             onPracticeRoute={handlePracticeRoute}
@@ -138,7 +143,7 @@ export default function EchoSpaceApp() {
       case "places":
         return (
           <PlacesScreen
-            places={mockPlaces}
+            places={placesData}
             onOpenPlace={handleOpenPlace}
             onNewScan={handleNewScan}
           />
@@ -146,8 +151,8 @@ export default function EchoSpaceApp() {
       case "routes":
         return (
           <RoutesScreen
-            routes={mockRoutes}
-            places={mockPlaces}
+            routes={routesData}
+            places={placesData}
             onPracticeRoute={handlePracticeRoute}
           />
         )
@@ -215,7 +220,7 @@ export default function EchoSpaceApp() {
       case "route-practice":
         return selectedRouteId ? (
           <RoutePracticeScreen
-            route={mockRoutes.find((r) => r.id === selectedRouteId)!}
+            route={routesData.find((r) => r.id === selectedRouteId)!}
             onBack={handleBack}
           />
         ) : null

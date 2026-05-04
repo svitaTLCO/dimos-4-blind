@@ -21,6 +21,8 @@ export function LiveScanScreen({ onBack, onFinish }: LiveScanScreenProps) {
 
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
+  const inFlightRef = useRef(false)
+  const queuedPayloadRef = useRef<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -77,18 +79,30 @@ export function LiveScanScreen({ onBack, onFinish }: LiveScanScreenProps) {
       const base64 = jpegDataUrl.split(",")[1]
       const roomId = rooms[rooms.length - 1]?.id ?? "1"
 
-      void fetch("/api/scan/frame", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          image_b64: base64,
-          format: "RGB",
-          frame_id: "ios_camera",
-          room_id: roomId,
-          guidance_hint: currentGuidance,
-          ts: Date.now() / 1000,
-        }),
+      const payload = JSON.stringify({
+        image_b64: base64,
+        format: "RGB",
+        frame_id: "ios_camera",
+        room_id: roomId,
+        guidance_hint: currentGuidance,
+        ts: Date.now() / 1000,
       })
+      if (inFlightRef.current) {
+        queuedPayloadRef.current = payload
+        return
+      }
+      inFlightRef.current = true
+      const sendPayload = async (body: string) => {
+        await fetch("/api/scan/frame", { method: "POST", headers: { "Content-Type": "application/json" }, body })
+        const queued = queuedPayloadRef.current
+        queuedPayloadRef.current = null
+        if (queued) {
+          await sendPayload(queued)
+          return
+        }
+        inFlightRef.current = false
+      }
+      void sendPayload(payload)
     }, 1000)
 
     return () => clearInterval(interval)
