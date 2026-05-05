@@ -95,3 +95,23 @@ def test_start_stop_server_state() -> None:
     assert p._uvicorn_server is None
     assert p._serve_future is None
     assert app.state.publisher is None
+
+
+def test_session_lifecycle_endpoints() -> None:
+    p = WebScanInput(start_server=False)
+    p.start()
+    client = TestClient(app)
+    created = client.post("/webscan/sessions", json={"session_id": "s1", "place_name": "Lab"})
+    assert created.status_code == 200
+    assert created.json()["session"]["session_id"] == "s1"
+    ev = client.post("/webscan/sessions/s1/event", json={"event_type": "room_started", "room_id": "r1"})
+    assert ev.status_code == 200
+    fr = client.post("/webscan/sessions/s1/frame", json={"image_b64": _b64(), "room_id": "r1"})
+    assert fr.status_code == 200
+    fin = client.post("/webscan/sessions/s1/finish")
+    assert fin.status_code == 200
+    assert fin.json()["session"]["status"] == "finished"
+    one = client.get("/webscan/sessions/s1")
+    assert one.status_code == 200
+    assert one.json()["session"]["frames_received"] >= 1
+    p.stop()

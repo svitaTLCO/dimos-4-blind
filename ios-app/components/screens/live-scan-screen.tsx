@@ -19,6 +19,7 @@ export function LiveScanScreen({ onBack, onFinish }: LiveScanScreenProps) {
   const [rooms, setRooms] = useState([{ id: "1", name: "Room 1", complete: false }])
   const [cameraError, setCameraError] = useState<string | null>(null)
   const [uploadError, setUploadError] = useState<string | null>(null)
+  const [sessionId, setSessionId] = useState<string | null>(null)
 
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
@@ -48,6 +49,25 @@ export function LiveScanScreen({ onBack, onFinish }: LiveScanScreenProps) {
     return () => {
       cancelled = true
       stream?.getTracks().forEach((track) => track.stop())
+    }
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    const startSession = async () => {
+      try {
+        const resp = await fetch("/api/scan/session/start", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ place_name: "Live Scan" }) })
+        const data = await resp.json()
+        if (!cancelled && resp.ok) {
+          setSessionId(data?.session?.session_id ?? null)
+        }
+      } catch {
+        // best effort; frame endpoint remains backward-compatible
+      }
+    }
+    void startSession()
+    return () => {
+      cancelled = true
     }
   }, [])
 
@@ -84,6 +104,7 @@ export function LiveScanScreen({ onBack, onFinish }: LiveScanScreenProps) {
         image_b64: base64,
         format: "RGB",
         frame_id: "ios_camera",
+        session_id: sessionId,
         room_id: roomId,
         guidance_hint: currentGuidance,
         ts: Date.now() / 1000,
@@ -116,7 +137,14 @@ export function LiveScanScreen({ onBack, onFinish }: LiveScanScreenProps) {
     }, 1000)
 
     return () => clearInterval(interval)
-  }, [isPaused, rooms, currentGuidance])
+  }, [isPaused, rooms, currentGuidance, sessionId])
+
+  const handleFinish = async () => {
+    if (sessionId) {
+      await fetch("/api/scan/session/finish", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ session_id: sessionId }) })
+    }
+    onFinish()
+  }
 
   const handleCompleteRoom = () => {
     setRooms((prev) => [...prev.slice(0, -1), { ...prev[prev.length - 1], complete: true }, { id: String(prev.length + 1), name: `Room ${prev.length + 1}`, complete: false }])
@@ -166,7 +194,7 @@ export function LiveScanScreen({ onBack, onFinish }: LiveScanScreenProps) {
         </div>
 
         {rooms.filter((r) => r.complete).length > 0 && (
-          <Button onClick={onFinish} variant="outline" size="lg" className="mt-4 w-full h-14 rounded-xl bg-background/20 backdrop-blur-md border-background/30 text-background hover:bg-background/30">
+          <Button onClick={handleFinish} variant="outline" size="lg" className="mt-4 w-full h-14 rounded-xl bg-background/20 backdrop-blur-md border-background/30 text-background hover:bg-background/30">
             Finish All Rooms ({rooms.filter((r) => r.complete).length} complete)
           </Button>
         )}
