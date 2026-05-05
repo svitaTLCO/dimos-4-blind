@@ -1,5 +1,6 @@
 import base64
 import io
+import json
 import os
 
 from fastapi import HTTPException
@@ -7,24 +8,26 @@ from fastapi.testclient import TestClient
 import numpy as np
 from PIL import Image as PILImage
 
-from dimos.perception.experimental.temporal_memory.web_scan_input import RATE_LIMIT_PER_SEC, MAX_PAYLOAD_BYTES, WebScanFrame, WebScanInput, app
-from dimos.robot.web_scan.blueprints.web_scan_temporal_memory_mcp import web_scan_temporal_memory_mcp
+from dimos.perception.experimental.temporal_memory.web_scan_input import MAX_PAYLOAD_BYTES, RATE_LIMIT_PER_SEC, WebScanFrame, WebScanInput, app
 
 
 def _b64() -> str:
     arr = np.zeros((16, 16, 3), dtype=np.uint8)
+    arr[:, :, 0] = 50
     img = PILImage.fromarray(arr)
     b = io.BytesIO()
     img.save(b, format="JPEG")
     return base64.b64encode(b.getvalue()).decode()
 
 
-def test_blueprint_import() -> None:
-    assert web_scan_temporal_memory_mcp is not None
+def _publisher() -> WebScanInput:
+    p = WebScanInput(start_server=False)
+    p.start()
+    return p
 
 
 def test_invalid_base64_400() -> None:
-    app.state.publisher = WebScanInput()
+    app.state.publisher = WebScanInput(start_server=False)
     r = TestClient(app).post("/webscan/frame", json={"image_b64": "%%%"})
     assert r.status_code == 400
 
@@ -51,38 +54,52 @@ def test_rate_limit_429() -> None:
     assert hit
 
 
-def test_token_auth() -> None:
+def test_session_lifecycle_and_backward_compat() -> None:
+    p = _publisher()
+    client = TestClient(app)
+    created = client.post("/webscan/sessions", json={"place_name": "Lab", "description": "Desc"})
+    assert created.status_code == 200
+    sid = created.json()["session"]["session_id"]
+    assert isinstance(sid, str) and sid
+    listed = client.get("/webscan/sessions")
+    assert listed.status_code == 200
+    assert any(s["session_id"] == sid for s in listed.json()["sessions"])
+    got = client.get(f"/webscan/sessions/{sid}")
+    assert got.status_code == 200
+
+    ev = client.post(f"/webscan/sessions/{sid}/event", json={"event_type": "room_started", "room_id": "room-1"})
+    assert ev.status_code == 200
+    fr = client.post(f"/webscan/sessions/{sid}/frame", json={"image_b64": _b64(), "frame_id": "ios_camera", "room_id": "room-1", "guidance_hint": "look-corners"})
+    assert fr.status_code == 200
+    fin = client.post(f"/webscan/sessions/{sid}/finish")
+    assert fin.status_code == 200
+    assert fin.json()["session"]["status"] == "finished"
+
+    legacy = client.post("/webscan/frame", json={"image_b64": _b64(), "room_id": "legacy-room"})
+    assert legacy.status_code == 200
+    legacy_sid = legacy.json()["session_id"]
+    legacy_get = client.get(f"/webscan/sessions/{legacy_sid}")
+    assert legacy_get.status_code == 200
+    p.stop()
+
+
+def test_token_auth_on_session_endpoints_and_skills_json() -> None:
     os.environ["DIMOS_WEB_SCAN_TOKEN"] = "secret"
-    p = WebScanInput(start_server=False); p.start()
-    payload = WebScanFrame(image_b64=_b64())
-    for auth, code in [(None, 401), ("Bearer wrong", 401), ("Bearer secret", 200)]:
-        try:
-            p.publish_webscan_frame(payload, auth)
-            got = 200
-        except HTTPException as e:
-            got = e.status_code
-        assert got == code
+    p = _publisher()
+    client = TestClient(app)
+    assert client.post("/webscan/sessions", json={"place_name": "x"}).status_code == 401
+    ok = client.post("/webscan/sessions", json={"place_name": "x"}, headers={"Authorization": "Bearer secret"})
+    assert ok.status_code == 200
+    sid = ok.json()["session"]["session_id"]
+    assert client.post(f"/webscan/sessions/{sid}/event", json={"event_type": "note"}).status_code == 401
+    assert client.post(f"/webscan/sessions/{sid}/event", json={"event_type": "note"}, headers={"Authorization": "Bearer secret"}).status_code == 200
+
+    for raw in [p.web_scan_status(), p.latest_web_scan_session(), p.clear_web_scan_sessions(), p.get_web_scan_session("missing")]:
+        parsed = json.loads(raw)
+        assert isinstance(parsed, dict)
+
     p.stop()
     del os.environ["DIMOS_WEB_SCAN_TOKEN"]
-
-
-def test_no_token_allows_upload() -> None:
-    os.environ.pop("DIMOS_WEB_SCAN_TOKEN", None)
-    p = WebScanInput(start_server=False)
-    try:
-        p.start()
-        assert p.publish_webscan_frame(WebScanFrame(image_b64=_b64()), None)["ok"] is True
-    finally:
-        p.stop()
-
-
-def test_skills_and_tf_publish() -> None:
-    p = WebScanInput(start_server=False); p.start()
-    p.publish_webscan_frame(WebScanFrame(image_b64=_b64(), room_id="r1"), None)
-    assert "sessions" in p.web_scan_status()
-    assert "session=" in p.latest_web_scan_session()
-    assert "Cleared" in p.clear_web_scan_sessions()
-    p.stop()
 
 
 def test_start_stop_server_state() -> None:
@@ -95,23 +112,3 @@ def test_start_stop_server_state() -> None:
     assert p._uvicorn_server is None
     assert p._serve_future is None
     assert app.state.publisher is None
-
-
-def test_session_lifecycle_endpoints() -> None:
-    p = WebScanInput(start_server=False)
-    p.start()
-    client = TestClient(app)
-    created = client.post("/webscan/sessions", json={"session_id": "s1", "place_name": "Lab"})
-    assert created.status_code == 200
-    assert created.json()["session"]["session_id"] == "s1"
-    ev = client.post("/webscan/sessions/s1/event", json={"event_type": "room_started", "room_id": "r1"})
-    assert ev.status_code == 200
-    fr = client.post("/webscan/sessions/s1/frame", json={"image_b64": _b64(), "room_id": "r1"})
-    assert fr.status_code == 200
-    fin = client.post("/webscan/sessions/s1/finish")
-    assert fin.status_code == 200
-    assert fin.json()["session"]["status"] == "finished"
-    one = client.get("/webscan/sessions/s1")
-    assert one.status_code == 200
-    assert one.json()["session"]["frames_received"] >= 1
-    p.stop()

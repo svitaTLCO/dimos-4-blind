@@ -3,9 +3,11 @@ from __future__ import annotations
 import base64
 import binascii
 import io
+import json
 import os
 import threading
 import time
+import uuid
 from collections import deque
 from dataclasses import dataclass
 from typing import Any
@@ -37,6 +39,7 @@ class WebScanFrame(BaseModel):
     frame_id: str = "ios_camera"
     ts: float | None = None
     room_id: str | None = None
+    guidance_hint: str | None = None
 
 
 class WebScanSessionCreate(BaseModel):
@@ -224,7 +227,7 @@ class WebScanInput(Module):
     def create_session(self, payload: WebScanSessionCreate, authorization: str | None) -> dict[str, Any]:
         self._auth(authorization)
         now = time.time()
-        sid = payload.session_id or f"session-{int(now * 1000)}"
+        sid = payload.session_id or str(uuid.uuid4())
         with self._lock:
             if sid in self._sessions:
                 raise HTTPException(status_code=409, detail="session already exists")
@@ -305,27 +308,33 @@ class WebScanInput(Module):
 
     def status_dict(self) -> dict[str, Any]:
         return {"ok": True, "sessions": len(self._sessions), "latest_session": self._latest_session}
-
     @skill
     def web_scan_status(self) -> str:
         """Get web scan service status with session count and latest session id."""
-        return str(self.status_dict())
-
+        return json.dumps(self.status_dict())
     @skill
     def latest_web_scan_session(self) -> str:
         """Get latest web scan session id with frame counters."""
         if not self._latest_session:
-            return "No web scan sessions yet"
+            return json.dumps({"ok": True, "latest_session": None})
         st = self._sessions[self._latest_session]
-        return f"session={self._latest_session}, frames={st.frames_received}"
-
+        return json.dumps({"ok": True, "latest_session": self._session_dict(st)})
     @skill
     def clear_web_scan_sessions(self) -> str:
         """Clear tracked web scan sessions from memory."""
         n = len(self._sessions)
         self._sessions.clear()
         self._latest_session = None
-        return f"Cleared {n} sessions"
+        return json.dumps({"ok": True, "cleared_sessions": n})
+
+    @skill
+    def get_web_scan_session(self, session_id: str) -> str:
+        """Get a specific web scan session by session id as JSON."""
+        with self._lock:
+            st = self._sessions.get(session_id)
+            if st is None:
+                return json.dumps({"ok": False, "error": "session not found", "session_id": session_id})
+            return json.dumps({"ok": True, "session": self._session_dict(st)})
 
 
 web_scan_input = WebScanInput.blueprint

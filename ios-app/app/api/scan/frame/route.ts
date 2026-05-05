@@ -1,29 +1,17 @@
 import { NextResponse } from "next/server"
-
-const DIMOS_WEB_SCAN_URL = process.env.DIMOS_WEB_SCAN_URL ?? "http://localhost:9991/webscan/frame"
-const DIMOS_WEB_SCAN_SESSION_BASE = process.env.DIMOS_WEB_SCAN_SESSION_BASE_URL ?? "http://localhost:9991/webscan/sessions"
-
+const BASE=(process.env.DIMOS_WEB_SCAN_URL??"http://127.0.0.1:9991").replace(/\/$/,"")
 export async function POST(request: Request) {
-  const body = await request.json()
-
-  const sessionId = body?.session_id as string | undefined
-  const upstreamUrl = sessionId ? `${DIMOS_WEB_SCAN_SESSION_BASE}/${sessionId}/frame` : DIMOS_WEB_SCAN_URL
-
-  const upstream = await fetch(upstreamUrl, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      ...(process.env.DIMOS_WEB_SCAN_TOKEN ? { Authorization: `Bearer ${process.env.DIMOS_WEB_SCAN_TOKEN}` } : {}),
-    },
-    body: JSON.stringify(body),
-    cache: "no-store",
-  })
-
-  const text = await upstream.text()
-  return new NextResponse(text, {
-    status: upstream.status,
-    headers: {
-      "Content-Type": upstream.headers.get("content-type") ?? "application/json",
-    },
-  })
+  try {
+    const body = await request.json()
+    const sessionId = body?.session_id as string | undefined
+    const path = sessionId ? `/webscan/sessions/${sessionId}/frame` : "/webscan/frame"
+    const upstream = await fetch(`${BASE}${path}`, {
+      method: "POST",
+      headers: {"Content-Type": "application/json", ...(process.env.DIMOS_WEB_SCAN_TOKEN ? { Authorization: `Bearer ${process.env.DIMOS_WEB_SCAN_TOKEN}` } : {})},
+      body: JSON.stringify(body), cache: "no-store",
+    })
+    return new NextResponse(await upstream.text(), {status: upstream.status, headers: {"Content-Type": upstream.headers.get("content-type") ?? "application/json"}})
+  } catch (e) {
+    return NextResponse.json({ ok: false, error: `backend unreachable: ${String(e)}` }, { status: 502 })
+  }
 }
