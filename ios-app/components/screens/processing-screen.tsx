@@ -34,11 +34,12 @@ export function ProcessingScreen({ onComplete }: ProcessingScreenProps) {
           setTimeout(() => onComplete(text), 500)
           return
         } catch (e) {
-          if (i === 2) {
+          if (i === 4) {
             const msg = e instanceof Error ? e.message : "Backend error"
             setError(msg)
             setSummary("Backend processing failed.")
             setTimeout(() => onComplete(""), 500)
+            return
           }
           await new Promise((r) => setTimeout(r, 2000))
         }

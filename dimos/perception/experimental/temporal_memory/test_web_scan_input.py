@@ -30,7 +30,7 @@ def test_invalid_base64_400() -> None:
 
 
 def test_payload_too_large_413() -> None:
-    p = WebScanInput()
+    p = WebScanInput(start_server=False)
     try:
         p.publish_webscan_frame(WebScanFrame(image_b64="a" * (MAX_PAYLOAD_BYTES + 1)), None)
     except HTTPException as e:
@@ -38,7 +38,7 @@ def test_payload_too_large_413() -> None:
 
 
 def test_rate_limit_429() -> None:
-    p = WebScanInput()
+    p = WebScanInput(start_server=False)
     payload = WebScanFrame(image_b64=_b64())
     hit = False
     for _ in range(RATE_LIMIT_PER_SEC + 2):
@@ -53,7 +53,7 @@ def test_rate_limit_429() -> None:
 
 def test_token_auth() -> None:
     os.environ["DIMOS_WEB_SCAN_TOKEN"] = "secret"
-    p = WebScanInput(); p.start()
+    p = WebScanInput(start_server=False); p.start()
     payload = WebScanFrame(image_b64=_b64())
     for auth, code in [(None, 401), ("Bearer wrong", 401), ("Bearer secret", 200)]:
         try:
@@ -62,26 +62,30 @@ def test_token_auth() -> None:
         except HTTPException as e:
             got = e.status_code
         assert got == code
+    p.stop()
     del os.environ["DIMOS_WEB_SCAN_TOKEN"]
 
 
 def test_no_token_allows_upload() -> None:
     if "DIMOS_WEB_SCAN_TOKEN" in os.environ:
-        del os.environ["DIMOS_WEB_SCAN_TOKEN"]
-    p = WebScanInput(); p.start()
+        p.stop()
+    del os.environ["DIMOS_WEB_SCAN_TOKEN"]
+    p = WebScanInput(start_server=False); p.start()
     assert p.publish_webscan_frame(WebScanFrame(image_b64=_b64()), None)["ok"] is True
+    p.stop()
 
 
 def test_skills_and_tf_publish() -> None:
-    p = WebScanInput(); p.start()
+    p = WebScanInput(start_server=False); p.start()
     p.publish_webscan_frame(WebScanFrame(image_b64=_b64(), room_id="r1"), None)
     assert "sessions" in p.web_scan_status()
     assert "session=" in p.latest_web_scan_session()
     assert "Cleared" in p.clear_web_scan_sessions()
+    p.stop()
 
 
 def test_start_stop_server_state() -> None:
-    p = WebScanInput()
+    p = WebScanInput(host="127.0.0.1", port=0, start_server=True)
     p.start()
     assert p._uvicorn_server is not None
     assert p._serve_future is not None

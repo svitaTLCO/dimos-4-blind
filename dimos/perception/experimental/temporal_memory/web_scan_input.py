@@ -70,11 +70,12 @@ class WebScanInput(Module):
     camera_info: Out[CameraInfo]
     odom: Out[PoseStamped]
 
-    def __init__(self, host: str = "127.0.0.1", port: int = 9991) -> None:
+    def __init__(self, host: str = "127.0.0.1", port: int = 9991, start_server: bool = True) -> None:
         super().__init__()
         self._host = host
         self._port = port
         self._token = ""
+        self._start_server = start_server
         self._rate_window: deque[float] = deque(maxlen=RATE_LIMIT_PER_SEC * 2)
         self._sessions: dict[str, SessionState] = {}
         self._latest_session: str | None = None
@@ -87,14 +88,15 @@ class WebScanInput(Module):
         super().start()
         self._token = os.getenv("DIMOS_WEB_SCAN_TOKEN", "")
         app.state.publisher = self
-        config = uvicorn.Config(app, host=self._host, port=self._port, log_level="warning")
-        self._uvicorn_server = uvicorn.Server(config)
-        if self._loop is not None:
-            self._serve_future = self._loop.run_in_executor(None, self._uvicorn_server.run)
-        else:
-            t = threading.Thread(target=self._uvicorn_server.run, daemon=True)
-            t.start()
-            self._serve_future = t
+        if self._start_server:
+            config = uvicorn.Config(app, host=self._host, port=self._port, log_level="warning")
+            self._uvicorn_server = uvicorn.Server(config)
+            if self._loop is not None:
+                self._serve_future = self._loop.run_in_executor(None, self._uvicorn_server.run)
+            else:
+                t = threading.Thread(target=self._uvicorn_server.run, daemon=True)
+                t.start()
+                self._serve_future = t
 
     @rpc
     def stop(self) -> None:
@@ -142,7 +144,11 @@ class WebScanInput(Module):
         ts = payload.ts or time.time()
         self.color_image.publish(Image.from_numpy(rgb, format=ImageFormat.RGB, frame_id=payload.frame_id, ts=ts))
         h, w = int(rgb.shape[0]), int(rgb.shape[1])
-        self.camera_info.publish(CameraInfo(height=h, width=w, frame_id=payload.frame_id, ts=ts))
+        fx = w * 0.8
+        fy = h * 0.8
+        cx = w / 2.0
+        cy = h / 2.0
+        self.camera_info.publish(CameraInfo(height=h, width=w, frame_id=payload.frame_id, K=[fx, 0.0, cx, 0.0, fy, cy, 0.0, 0.0, 1.0], P=[fx, 0.0, cx, 0.0, 0.0, fy, cy, 0.0, 0.0, 0.0, 1.0, 0.0], ts=ts))
         self.odom.publish(PoseStamped(ts=ts, frame_id="map", position=[0.0, 0.0, 0.0]))
         if self.tf is not None:
             self.tf.publish(
