@@ -17,6 +17,7 @@ import { GuidedTourScreen } from "@/components/screens/guided-tour-screen"
 import { RoutePracticeScreen } from "@/components/screens/route-practice-screen"
 import { ShareScreen } from "@/components/screens/share-screen"
 import { mockPlaces, mockRoutes, defaultAccessibilitySettings } from "@/lib/mock-data"
+import { createScanSession } from "@/lib/dimos-api"
 import type { Place, Room, AccessibilitySettings } from "@/lib/types"
 
 type Screen =
@@ -44,6 +45,7 @@ export default function EchoSpaceApp() {
   const [accessibilitySettings, setAccessibilitySettings] = useState<AccessibilitySettings>(
     defaultAccessibilitySettings
   )
+  const [currentScanSessionId, setCurrentScanSessionId] = useState<string | null>(null)
   const useMockData = process.env.NEXT_PUBLIC_USE_MOCK_DATA === "true"
   const placesData = useMockData ? mockPlaces : []
   const routesData = useMockData ? mockRoutes : []
@@ -82,7 +84,11 @@ export default function EchoSpaceApp() {
     setCurrentScreen("new-place")
   }
 
-  const handleStartScan = () => {
+  const handleStartScan = async (input: { placeName: string; description: string }) => {
+    const created = await createScanSession({ placeName: input.placeName, description: input.description })
+    const sid = created?.session?.session_id
+    if (!sid) return
+    setCurrentScanSessionId(sid)
     setCurrentScreen("live-scan")
   }
 
@@ -181,11 +187,11 @@ export default function EchoSpaceApp() {
           <NewPlaceScreen onBack={handleBack} onStartScan={handleStartScan} />
         )
       case "live-scan":
-        return (
-          <LiveScanScreen onBack={handleBack} onFinish={handleFinishScan} />
-        )
+        return currentScanSessionId ? (
+          <LiveScanScreen onBack={handleBack} onFinish={handleFinishScan} sessionId={currentScanSessionId} />
+        ) : null
       case "processing":
-        return <ProcessingScreen onComplete={handleProcessingComplete} />
+        return currentScanSessionId ? <ProcessingScreen sessionId={currentScanSessionId} onComplete={handleProcessingComplete} /> : null
       case "place-overview":
         return selectedPlace ? (
           <PlaceOverviewScreen

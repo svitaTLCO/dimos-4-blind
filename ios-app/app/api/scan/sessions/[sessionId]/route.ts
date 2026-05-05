@@ -1,0 +1,3 @@
+import { NextResponse } from "next/server"
+const BASE=(process.env.DIMOS_WEB_SCAN_URL??"http://127.0.0.1:9991").replace(/\/$/,"")
+export async function GET(_:Request,{params}:{params:{sessionId:string}}){try{const u=await fetch(`${BASE}/webscan/sessions/${params.sessionId}`,{cache:'no-store',headers:{...(process.env.DIMOS_WEB_SCAN_TOKEN?{Authorization:`Bearer ${process.env.DIMOS_WEB_SCAN_TOKEN}`}:{})}});return new NextResponse(await u.text(),{status:u.status,headers:{"Content-Type":u.headers.get('content-type')??'application/json'}})}catch(e){return NextResponse.json({ok:false,error:`backend unreachable: ${String(e)}`},{status:502})}}

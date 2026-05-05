@@ -3,9 +3,11 @@ from __future__ import annotations
 import base64
 import binascii
 import io
+import json
 import os
 import threading
 import time
+import uuid
 from collections import deque
 from dataclasses import dataclass
 from typing import Any
@@ -37,13 +39,38 @@ class WebScanFrame(BaseModel):
     frame_id: str = "ios_camera"
     ts: float | None = None
     room_id: str | None = None
+    guidance_hint: str | None = None
+
+
+class WebScanSessionCreate(BaseModel):
+    session_id: str | None = None
+    place_name: str | None = None
+    description: str | None = None
+
+
+class WebScanSessionEvent(BaseModel):
+    event_type: str
+    room_id: str | None = None
+    note: str | None = None
+    ts: float | None = None
 
 
 @dataclass
 class SessionState:
+    session_id: str
+    place_name: str | None
+    description: str | None
     started_at: float
+    finished_at: float | None = None
     frames_received: int = 0
-    last_frame_at: float = 0.0
+    last_frame_at: float | None = None
+    rooms: list[dict[str, Any]] | None = None
+    events: list[dict[str, Any]] | None = None
+    status: str = "running"
+
+    def __post_init__(self) -> None:
+        self.rooms = self.rooms or []
+        self.events = self.events or []
 
 
 @app.get("/webscan/health")
@@ -63,6 +90,54 @@ async def post_frame(payload: WebScanFrame, authorization: str | None = Header(d
     if p is None:
         raise HTTPException(status_code=503, detail="publisher unavailable")
     return p.publish_webscan_frame(payload, authorization)
+
+
+@app.post("/webscan/sessions")
+async def create_session(payload: WebScanSessionCreate, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    p: WebScanInput | None = app.state.publisher
+    if p is None:
+        raise HTTPException(status_code=503, detail="publisher unavailable")
+    return p.create_session(payload, authorization)
+
+
+@app.get("/webscan/sessions")
+async def list_sessions() -> dict[str, Any]:
+    p: WebScanInput | None = app.state.publisher
+    if p is None:
+        raise HTTPException(status_code=503, detail="publisher unavailable")
+    return p.list_sessions()
+
+
+@app.get("/webscan/sessions/{session_id}")
+async def get_session(session_id: str) -> dict[str, Any]:
+    p: WebScanInput | None = app.state.publisher
+    if p is None:
+        raise HTTPException(status_code=503, detail="publisher unavailable")
+    return p.get_session(session_id)
+
+
+@app.post("/webscan/sessions/{session_id}/frame")
+async def post_session_frame(session_id: str, payload: WebScanFrame, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    p: WebScanInput | None = app.state.publisher
+    if p is None:
+        raise HTTPException(status_code=503, detail="publisher unavailable")
+    return p.publish_webscan_frame(payload, authorization, session_id=session_id)
+
+
+@app.post("/webscan/sessions/{session_id}/event")
+async def post_session_event(session_id: str, payload: WebScanSessionEvent, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    p: WebScanInput | None = app.state.publisher
+    if p is None:
+        raise HTTPException(status_code=503, detail="publisher unavailable")
+    return p.record_event(session_id, payload, authorization)
+
+
+@app.post("/webscan/sessions/{session_id}/finish")
+async def finish_session(session_id: str, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    p: WebScanInput | None = app.state.publisher
+    if p is None:
+        raise HTTPException(status_code=503, detail="publisher unavailable")
+    return p.finish_session(session_id, authorization)
 
 
 class WebScanInput(Module):
@@ -128,7 +203,73 @@ class WebScanInput(Module):
             raise HTTPException(status_code=429, detail="frame rate limit exceeded")
         self._rate_window.append(now)
 
-    def publish_webscan_frame(self, payload: WebScanFrame, authorization: str | None) -> dict[str, Any]:
+    def _session_dict(self, st: SessionState) -> dict[str, Any]:
+        return {
+            "session_id": st.session_id,
+            "place_name": st.place_name,
+            "description": st.description,
+            "started_at": st.started_at,
+            "finished_at": st.finished_at,
+            "frames_received": st.frames_received,
+            "last_frame_at": st.last_frame_at,
+            "rooms": st.rooms,
+            "events": st.events,
+            "status": st.status,
+        }
+
+    def _ensure_session(self, session_id: str, ts: float) -> SessionState:
+        st = self._sessions.get(session_id)
+        if st is None:
+            st = SessionState(session_id=session_id, place_name=None, description=None, started_at=ts)
+            self._sessions[session_id] = st
+        return st
+
+    def create_session(self, payload: WebScanSessionCreate, authorization: str | None) -> dict[str, Any]:
+        self._auth(authorization)
+        now = time.time()
+        sid = payload.session_id or str(uuid.uuid4())
+        with self._lock:
+            if sid in self._sessions:
+                raise HTTPException(status_code=409, detail="session already exists")
+            st = SessionState(session_id=sid, place_name=payload.place_name, description=payload.description, started_at=now)
+            self._sessions[sid] = st
+            self._latest_session = sid
+        return {"ok": True, "session": self._session_dict(st)}
+
+    def list_sessions(self) -> dict[str, Any]:
+        with self._lock:
+            sessions = [self._session_dict(st) for st in self._sessions.values()]
+        return {"ok": True, "sessions": sessions}
+
+    def get_session(self, session_id: str) -> dict[str, Any]:
+        with self._lock:
+            st = self._sessions.get(session_id)
+            if st is None:
+                raise HTTPException(status_code=404, detail="session not found")
+            return {"ok": True, "session": self._session_dict(st)}
+
+    def record_event(self, session_id: str, payload: WebScanSessionEvent, authorization: str | None) -> dict[str, Any]:
+        self._auth(authorization)
+        ts = payload.ts or time.time()
+        with self._lock:
+            st = self._ensure_session(session_id, ts)
+            st.events.append({"event_type": payload.event_type, "room_id": payload.room_id, "note": payload.note, "ts": ts})
+            if payload.room_id and all(r.get("room_id") != payload.room_id for r in st.rooms):
+                st.rooms.append({"room_id": payload.room_id, "first_seen_at": ts})
+        return {"ok": True, "session": self._session_dict(st)}
+
+    def finish_session(self, session_id: str, authorization: str | None) -> dict[str, Any]:
+        self._auth(authorization)
+        now = time.time()
+        with self._lock:
+            st = self._sessions.get(session_id)
+            if st is None:
+                raise HTTPException(status_code=404, detail="session not found")
+            st.finished_at = now
+            st.status = "finished"
+        return {"ok": True, "session": self._session_dict(st)}
+
+    def publish_webscan_frame(self, payload: WebScanFrame, authorization: str | None, session_id: str | None = None) -> dict[str, Any]:
         self._auth(authorization)
         self._limit()
         if len(payload.image_b64) > MAX_PAYLOAD_BYTES:
@@ -155,9 +296,11 @@ class WebScanInput(Module):
                 Transform(frame_id="map", child_frame_id="base_link", ts=ts),
                 Transform(frame_id="base_link", child_frame_id=payload.frame_id, ts=ts, translation=Vector3(0.15, 0.0, 0.2)),
             )
-        sid = payload.room_id or "default"
+        sid = session_id or payload.room_id or "default"
         with self._lock:
-            st = self._sessions.setdefault(sid, SessionState(started_at=ts))
+            st = self._ensure_session(sid, ts)
+            if payload.room_id and all(r.get("room_id") != payload.room_id for r in st.rooms):
+                st.rooms.append({"room_id": payload.room_id, "first_seen_at": ts})
             st.frames_received += 1
             st.last_frame_at = ts
             self._latest_session = sid
@@ -165,27 +308,33 @@ class WebScanInput(Module):
 
     def status_dict(self) -> dict[str, Any]:
         return {"ok": True, "sessions": len(self._sessions), "latest_session": self._latest_session}
-
     @skill
     def web_scan_status(self) -> str:
         """Get web scan service status with session count and latest session id."""
-        return str(self.status_dict())
-
+        return json.dumps(self.status_dict())
     @skill
     def latest_web_scan_session(self) -> str:
         """Get latest web scan session id with frame counters."""
         if not self._latest_session:
-            return "No web scan sessions yet"
+            return json.dumps({"ok": True, "latest_session": None})
         st = self._sessions[self._latest_session]
-        return f"session={self._latest_session}, frames={st.frames_received}"
-
+        return json.dumps({"ok": True, "latest_session": self._session_dict(st)})
     @skill
     def clear_web_scan_sessions(self) -> str:
         """Clear tracked web scan sessions from memory."""
         n = len(self._sessions)
         self._sessions.clear()
         self._latest_session = None
-        return f"Cleared {n} sessions"
+        return json.dumps({"ok": True, "cleared_sessions": n})
+
+    @skill
+    def get_web_scan_session(self, session_id: str) -> str:
+        """Get a specific web scan session by session id as JSON."""
+        with self._lock:
+            st = self._sessions.get(session_id)
+            if st is None:
+                return json.dumps({"ok": False, "error": "session not found", "session_id": session_id})
+            return json.dumps({"ok": True, "session": self._session_dict(st)})
 
 
 web_scan_input = WebScanInput.blueprint
