@@ -67,12 +67,13 @@ def test_token_auth() -> None:
 
 
 def test_no_token_allows_upload() -> None:
-    if "DIMOS_WEB_SCAN_TOKEN" in os.environ:
+    os.environ.pop("DIMOS_WEB_SCAN_TOKEN", None)
+    p = WebScanInput(start_server=False)
+    try:
+        p.start()
+        assert p.publish_webscan_frame(WebScanFrame(image_b64=_b64()), None)["ok"] is True
+    finally:
         p.stop()
-    del os.environ["DIMOS_WEB_SCAN_TOKEN"]
-    p = WebScanInput(start_server=False); p.start()
-    assert p.publish_webscan_frame(WebScanFrame(image_b64=_b64()), None)["ok"] is True
-    p.stop()
 
 
 def test_skills_and_tf_publish() -> None:
