@@ -79,12 +79,36 @@ class WebScanInput(Module):
         self._sessions: dict[str, SessionState] = {}
         self._latest_session: str | None = None
         self._lock = threading.Lock()
+        self._uvicorn_server: uvicorn.Server | None = None
+        self._serve_future = None
 
     @rpc
     def start(self) -> None:
         super().start()
         self._token = os.getenv("DIMOS_WEB_SCAN_TOKEN", "")
         app.state.publisher = self
+        config = uvicorn.Config(app, host=self._host, port=self._port, log_level="warning")
+        self._uvicorn_server = uvicorn.Server(config)
+        if self._loop is not None:
+            self._serve_future = self._loop.run_in_executor(None, self._uvicorn_server.run)
+        else:
+            t = threading.Thread(target=self._uvicorn_server.run, daemon=True)
+            t.start()
+            self._serve_future = t
+
+    @rpc
+    def stop(self) -> None:
+        if self._uvicorn_server is not None:
+            self._uvicorn_server.should_exit = True
+        if hasattr(self._serve_future, "result"):
+            try:
+                self._serve_future.result(timeout=2.0)
+            except Exception:
+                pass
+        app.state.publisher = None
+        self._uvicorn_server = None
+        self._serve_future = None
+        super().stop()
 
     def _auth(self, authorization: str | None) -> None:
         if not self._token:

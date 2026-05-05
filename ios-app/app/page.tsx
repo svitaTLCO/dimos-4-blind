@@ -45,8 +45,8 @@ export default function EchoSpaceApp() {
     defaultAccessibilitySettings
   )
   const useMockData = process.env.NEXT_PUBLIC_USE_MOCK_DATA === "true"
-  const placesData = mockPlaces
-  const routesData = mockRoutes
+  const placesData = useMockData ? mockPlaces : []
+  const routesData = useMockData ? mockRoutes : []
 
   const handleTabChange = (tab: TabId) => {
     setActiveTab(tab)

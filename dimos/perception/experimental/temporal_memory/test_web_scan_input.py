@@ -78,3 +78,15 @@ def test_skills_and_tf_publish() -> None:
     assert "sessions" in p.web_scan_status()
     assert "session=" in p.latest_web_scan_session()
     assert "Cleared" in p.clear_web_scan_sessions()
+
+
+def test_start_stop_server_state() -> None:
+    p = WebScanInput()
+    p.start()
+    assert p._uvicorn_server is not None
+    assert p._serve_future is not None
+    assert app.state.publisher is p
+    p.stop()
+    assert p._uvicorn_server is None
+    assert p._serve_future is None
+    assert app.state.publisher is None

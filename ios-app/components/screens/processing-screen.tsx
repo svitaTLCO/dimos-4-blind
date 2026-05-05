@@ -13,14 +13,21 @@ export function ProcessingScreen({ onComplete }: ProcessingScreenProps) {
       const resp = await fetch("/api/dimos/mcp", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "query", arguments: { question: "Summarize the latest scanned space." } } }) })
       if (!resp.ok) throw new Error(`MCP HTTP ${resp.status}`)
       const data = await resp.json()
+      if (data?.error) throw new Error(String(data.error.message ?? "MCP error"))
       return data?.result?.content?.[0]?.text ?? "No summary returned"
     }
     const run = async () => {
-      for (let i = 0; i < 3; i++) {
+      for (let i = 0; i < 5; i++) {
         try {
           const text = await query()
           if (text.includes("no frames available") || text === "No summary returned") {
-            await new Promise((r) => setTimeout(r, 800))
+            if (i === 4) {
+              setError("No usable backend summary yet. Please scan a bit longer and retry.")
+              setSummary("Temporal memory is still warming up.")
+              setTimeout(() => onComplete(""), 500)
+              return
+            }
+            await new Promise((r) => setTimeout(r, 2000))
             continue
           }
           setSummary(text)
@@ -33,7 +40,7 @@ export function ProcessingScreen({ onComplete }: ProcessingScreenProps) {
             setSummary("Backend processing failed.")
             setTimeout(() => onComplete(""), 500)
           }
-          await new Promise((r) => setTimeout(r, 800))
+          await new Promise((r) => setTimeout(r, 2000))
         }
       }
     }
